@@ -1,0 +1,7 @@
+fecha,activo,fase,direccion,monto,rsi,payout,resultado,profit,saldo
+2026-11-17 19:07:02,SPX/Gold,F1 Supervivencia,put,1.00,36.2,0.86,win,0.86,11.86
+2026-11-17 19:30:14,SPX/Gold,F1 Supervivencia,call,1.00,57.2,0.86,loose,-1.00,10.86
+2026-11-17 21:23:03,RAYDIUMUSD-OTC,F1 Supervivencia,put,1.00,45.8,0.87,win,0.87,11.73
+2026-11-18 07:58:04,EURUSD-op,F1 Supervivencia,put,1.00,38.1,0.84,win,0.84,12.23
+2026-11-18 08:37:02,EURUSD-op,F1 Supervivencia,call,1.00,57.8,0.84,win,0.84,13.07
+2026-11-18 11:53:04,USDJPY-op,F1 Supervivencia,put,1.00,42.3,0.84,win,0.84,13.91

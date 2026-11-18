@@ -1,0 +1,2 @@
+py bot_binarias.py
+py buscar_activo.py
