@@ -157,10 +157,23 @@ def connect() -> IQ_Option:
         log("❌ ALLOW_OTC=False y el activo configurado es OTC. Cambia ASSET.")
         sys.exit(1)
 
-    api = IQ_Option(email, password)
-    ok, reason = api.connect()
+    # La librería puede lanzar excepciones (WebSocket cerrado) en vez de devolver False:
+    # se reintenta con una instancia nueva cada vez.
+    ok, reason, api = False, "", None
+    for attempt in range(1, 4):
+        api = IQ_Option(email, password)
+        try:
+            ok, reason = api.connect()
+        except Exception as e:
+            ok, reason = False, f"{type(e).__name__}: {e}"
+        if ok:
+            break
+        log(f"⚠️ Conexión fallida (intento {attempt}/3): {reason}")
+        time.sleep(5)
     if not ok:
-        log(f"❌ No se pudo conectar: {reason}")
+        log("❌ No se pudo conectar. Si el error menciona 'Connection is already closed':")
+        log("   pip install websocket-client==0.56.0   (versión compatible con iqoptionapi)")
+        log("   y verifica tu internet / que la cuenta no tenga verificación pendiente.")
         sys.exit(1)
 
     api.change_balance(ACCOUNT_TYPE)
@@ -671,5 +684,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
  
