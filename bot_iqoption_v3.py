@@ -22,6 +22,7 @@ Requisitos:  pip install pandas
              pip install git+https://github.com/iqoptionapi/iqoptionapi.git
 """
 
+import argparse
 import csv
 import json
 import logging
@@ -36,9 +37,9 @@ from iqoptionapi.stable_api import IQ_Option
 
 # ========================= CONFIGURACIÓN =========================
 # Credenciales: variables de entorno IQ_EMAIL / IQ_PASSWORD (o se piden por consola)
-ACCOUNT_TYPE = "REAL"      # "PRACTICE" (demo) o "REAL"
+ACCOUNT_TYPE = "PRACTICE"      # "PRACTICE" (demo) o "REAL"
 
-ASSET = "USDJPY-op"          # Entre semana puedes usar "EURUSD"
+ASSET = "HBARUSD-OTC"          # Entre semana puedes usar "EURUSD"
 TIMEFRAME = 60
 N_CANDLES = 100
 EXPIRATION = 1                 # minutos
@@ -63,6 +64,7 @@ MAX_STAKE_MULT = 1.5           # Tope: stake <= 1.5 x (% de la fase x saldo)
 # --- Límites de sesión/día ---
 STOP_LOSS_PCT = 0.20           # Detener si cae 20% desde el saldo inicial del día
 TAKE_PROFIT_PCT = 0.15         # Detener si sube 15%
+LOCK_ON_TAKE_PROFIT = True     # True: tras el Take Profit no se vuelve a operar ese día
 BREAKEVEN_TRIGGER = 0.08       # Al llegar a +8%, el Stop Loss sube al saldo inicial
 
 # --- Control de pérdidas seguidas ---
@@ -83,12 +85,36 @@ USE_TREND_FILTER = True        # CALL solo sobre EMA 50, PUT solo bajo EMA 50
 # --- Estrategia ---
 EMA_FAST, EMA_SLOW, RSI_PERIOD, EMA_TREND = 9, 21, 14, 50
 
+# --- Horario de operación (el bot puede quedar encendido 24/7 y operar solo en esta ventana) ---
+USE_TRADE_WINDOW = True
+TRADE_START_HOUR = 7           # Desde las 07:00 ...
+TRADE_END_HOUR = 11            # ... hasta las 11:00 (no incluye las 11:00)
+WEEKDAYS_ONLY = True           # EURUSD real está cerrado sábado y domingo
+TIMEZONE = None                # None = hora de este equipo. Ej: "America/Bogota", "America/Mexico_City"
+                               # (en Windows: pip install tzdata). Útil si lo corres en un servidor (UTC).
+
 MAX_CONSECUTIVE_ERRORS = 5
 CSV_FILE = "trades_log_v3.csv"
 STATE_FILE = "daily_state.json"   # Candado diario (bórralo para reiniciar el día manualmente)
 # =================================================================
 
 logging.disable(logging.CRITICAL)
+
+
+def now_local() -> datetime:
+    if TIMEZONE:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(TIMEZONE))
+    return datetime.now()
+
+
+def in_trade_window() -> bool:
+    if not USE_TRADE_WINDOW:
+        return True
+    now = now_local()
+    if WEEKDAYS_ONLY and now.weekday() >= 5:
+        return False
+    return TRADE_START_HOUR <= now.hour < TRADE_END_HOUR
 
 
 def log(msg: str) -> None:
@@ -425,11 +451,34 @@ def wait_next_candle() -> None:
 
 
 def main() -> None:
+    global ASSET, ACCOUNT_TYPE, STATE_FILE, CSV_FILE
+
+    # Activo elegido desde la consola (si no se indica, usa el de la configuración)
+    parser = argparse.ArgumentParser(description="Bot EMA/RSI para IQ Option")
+    parser.add_argument("--asset", help="Activo a operar, ej: EURUSD o EURUSD-OTC")
+    parser.add_argument("--ask", action="store_true", help="Preguntar el activo al iniciar")
+    parser.add_argument("--account", choices=["PRACTICE", "REAL", "practice", "real"],
+                        help="Tipo de cuenta (por defecto, el de la configuración)")
+    args = parser.parse_args()
+    if args.account:
+        ACCOUNT_TYPE = args.account.upper()
+    # Estado diario y registro separados por tipo de cuenta (demo y real no se mezclan)
+    STATE_FILE = f"daily_state_{ACCOUNT_TYPE.lower()}.json"
+    CSV_FILE = f"trades_log_v3_{ACCOUNT_TYPE.lower()}.csv"
+    if args.ask:
+        typed = input(f"Activo a operar [{ASSET}]: ").strip().upper()
+        if typed:
+            ASSET = typed
+    elif args.asset:
+        ASSET = args.asset.strip().upper()
+    log(f"Activo seleccionado: {ASSET}")
+
     api = connect()
 
     if ACCOUNT_TYPE == "REAL":
         print("\n⚠️  ESTÁS A PUNTO DE OPERAR CON DINERO REAL ⚠️")
         print(f"   Saldo real: ${api.get_balance():.2f}")
+        # La confirmación manual es obligatoria: no hay opción para saltarla.
         if input("   Escribe SI para continuar: ").strip().upper() != "SI":
             log("Cancelado por el usuario.")
             sys.exit(0)
@@ -476,6 +525,7 @@ def main() -> None:
     wins = losses = draws = 0
     consec_wins = consec_losses = 0
     survival_pauses = 0
+    idle_logged = False
     errors = 0
     stop_reason = None
 
@@ -487,13 +537,26 @@ def main() -> None:
         while True:
             try:
                 ensure_connection(api)
+
+                # Fuera del horario: esperar sin operar (el bot sigue vivo y conectado)
+                if not in_trade_window():
+                    if not idle_logged:
+                        log(f"🕒 Fuera de horario ({TRADE_START_HOUR}:00-{TRADE_END_HOUR}:00"
+                            f"{', lun-vie' if WEEKDAYS_ONLY else ''}). Esperando...")
+                        idle_logged = True
+                    time.sleep(30)
+                    continue
+                if idle_logged:
+                    log("🟢 Dentro de horario. Reanudando operaciones.")
+                    idle_logged = False
+
                 wait_next_candle()
 
                 balance = safe_balance(api, last_balance)
                 last_balance = balance
                 stop_reason = check_limits(balance, stop_loss, take_profit)
                 if stop_reason:
-                    if stop_reason in ("SL", "GOAL"):
+                    if stop_reason in ("SL", "GOAL") or (stop_reason == "TP" and LOCK_ON_TAKE_PROFIT):
                         lock_day(stop_reason)
                     break
 
@@ -559,7 +622,7 @@ def main() -> None:
 
                 stop_reason = check_limits(balance, stop_loss, take_profit)
                 if stop_reason:
-                    if stop_reason in ("SL", "GOAL"):
+                    if stop_reason in ("SL", "GOAL") or (stop_reason == "TP" and LOCK_ON_TAKE_PROFIT):
                         lock_day(stop_reason)
                     break
 
@@ -608,3 +671,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+ 
