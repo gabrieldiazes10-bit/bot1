@@ -157,10 +157,23 @@ def connect() -> IQ_Option:
         log("❌ ALLOW_OTC=False y el activo configurado es OTC. Cambia ASSET.")
         sys.exit(1)
 
-    api = IQ_Option(email, password)
-    ok, reason = api.connect()
+    # La librería puede lanzar excepciones (WebSocket cerrado) en vez de devolver False:
+    # se reintenta con una instancia nueva cada vez.
+    ok, reason, api = False, "", None
+    for attempt in range(1, 4):
+        api = IQ_Option(email, password)
+        try:
+            ok, reason = api.connect()
+        except Exception as e:
+            ok, reason = False, f"{type(e).__name__}: {e}"
+        if ok:
+            break
+        log(f"⚠️ Conexión fallida (intento {attempt}/3): {reason}")
+        time.sleep(5)
     if not ok:
-        log(f"❌ No se pudo conectar: {reason}")
+        log("❌ No se pudo conectar. Si el error menciona 'Connection is already closed':")
+        log("   pip install websocket-client==0.56.0   (versión compatible con iqoptionapi)")
+        log("   y verifica tu internet / que la cuenta no tenga verificación pendiente.")
         sys.exit(1)
 
     api.change_balance(ACCOUNT_TYPE)
@@ -327,16 +340,30 @@ def get_signal(df: pd.DataFrame):
 
 
 # ------------------------- Filtro de payout -------------------------
+_payout_diag_logged = False
+
+
 def get_payout(api: IQ_Option, asset: str):
     """Payout (0-1) del activo para la expiración configurada, o None si no se pudo leer."""
+    global _payout_diag_logged
     try:
         profits = api.get_all_profit()
-        info = profits.get(asset)
+        info = profits.get(asset) if profits else None
         if not info:
+            if not _payout_diag_logged:
+                _payout_diag_logged = True
+                base = asset.split("-")[0][:6]
+                similar = [k for k in (profits or {}) if base in k][:6]
+                log(f"🔎 Diagnóstico payout: '{asset}' no aparece en get_all_profit() "
+                    f"({len(profits or {})} activos). Parecidos: {similar or 'ninguno'}")
             return None
         key = "turbo" if EXPIRATION <= 5 else "binary"
         val = info.get(key) or info.get("binary")
         if val is None:
+            if not _payout_diag_logged:
+                _payout_diag_logged = True
+                log(f"🔎 Diagnóstico payout: '{asset}' existe pero sin dato turbo/binary. "
+                    f"Claves: {list(info.keys())}")
             return None
         val = float(val)
         return val / 100 if val > 1 else val
@@ -459,7 +486,12 @@ def main() -> None:
     parser.add_argument("--ask", action="store_true", help="Preguntar el activo al iniciar")
     parser.add_argument("--account", choices=["PRACTICE", "REAL", "practice", "real"],
                         help="Tipo de cuenta (por defecto, el de la configuración)")
+    parser.add_argument("--payout-flex", action="store_true",
+                        help="Si no se puede leer el payout, operar igual (si se lee y es bajo, no opera)")
     args = parser.parse_args()
+    if args.payout_flex:
+        global PAYOUT_STRICT
+        PAYOUT_STRICT = False
     if args.account:
         ACCOUNT_TYPE = args.account.upper()
     # Estado diario y registro separados por tipo de cuenta (demo y real no se mezclan)
@@ -671,5 +703,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
+ 
  
