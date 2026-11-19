@@ -37,9 +37,9 @@ from iqoptionapi.stable_api import IQ_Option
 
 # ========================= CONFIGURACIÓN =========================
 # Credenciales: variables de entorno IQ_EMAIL / IQ_PASSWORD (o se piden por consola)
-ACCOUNT_TYPE = "PRACTICE"      # "PRACTICE" (demo) o "REAL"
+ACCOUNT_TYPE = "REAL"          # CUENTA REAL (pide confirmación escribiendo SI)
 
-ASSET = "HBARUSD-OTC"          # Entre semana puedes usar "EURUSD"
+ASSET = "EURUSD"              # Abierto lunes a viernes. Fines de semana: usa --find y un OTC
 TIMEFRAME = 60
 N_CANDLES = 100
 EXPIRATION = 1                 # minutos
@@ -86,7 +86,7 @@ USE_TREND_FILTER = True        # CALL solo sobre EMA 50, PUT solo bajo EMA 50
 EMA_FAST, EMA_SLOW, RSI_PERIOD, EMA_TREND = 9, 21, 14, 50
 
 # --- Horario de operación (el bot puede quedar encendido 24/7 y operar solo en esta ventana) ---
-USE_TRADE_WINDOW = True
+USE_TRADE_WINDOW = False   # Sin horario: opera cuando lo ejecutes
 TRADE_START_HOUR = 7           # Desde las 07:00 ...
 TRADE_END_HOUR = 11            # ... hasta las 11:00 (no incluye las 11:00)
 WEEKDAYS_ONLY = True           # EURUSD real está cerrado sábado y domingo
@@ -142,6 +142,7 @@ def get_balance_timeout(api: IQ_Option, timeout: float = 20.0):
 
 
 def connect() -> IQ_Option:
+    global ASSET
     email = os.getenv("IQ_EMAIL") or input("Email IQ Option: ").strip()
     password = os.getenv("IQ_PASSWORD")
     if not password:
@@ -192,8 +193,11 @@ def connect() -> IQ_Option:
 
     try:
         from iqoptionapi import constants
+        exact = {k.lower(): k for k in constants.ACTIVES}
+        ASSET = exact.get(ASSET.lower(), ASSET)   # usa el nombre EXACTO de la librería (-op, -OTC...)
         if ASSET not in constants.ACTIVES:
-            log(f"⚠️ El activo '{ASSET}' no está en la lista de la librería.")
+            log(f"⚠️ El activo '{ASSET}' no está en la lista de la librería. "
+                f"Búscalo con:  python bot_iqoption_v3.py --find eurusd")
     except Exception:
         pass
 
@@ -349,6 +353,8 @@ def get_payout(api: IQ_Option, asset: str):
     try:
         profits = api.get_all_profit()
         info = profits.get(asset) if profits else None
+        if not info and profits:
+            info = next((v for k, v in profits.items() if k.lower() == asset.lower()), None)
         if not info:
             if not _payout_diag_logged:
                 _payout_diag_logged = True
@@ -486,6 +492,7 @@ def main() -> None:
     parser.add_argument("--ask", action="store_true", help="Preguntar el activo al iniciar")
     parser.add_argument("--account", choices=["PRACTICE", "REAL", "practice", "real"],
                         help="Tipo de cuenta (por defecto, el de la configuración)")
+    parser.add_argument("--find", help="Listar activos cuyo nombre contenga este texto y salir")
     parser.add_argument("--payout-flex", action="store_true",
                         help="Si no se puede leer el payout, operar igual (si se lee y es bajo, no opera)")
     args = parser.parse_args()
@@ -498,14 +505,19 @@ def main() -> None:
     STATE_FILE = f"daily_state_{ACCOUNT_TYPE.lower()}.json"
     CSV_FILE = f"trades_log_v3_{ACCOUNT_TYPE.lower()}.csv"
     if args.ask:
-        typed = input(f"Activo a operar [{ASSET}]: ").strip().upper()
+        typed = input(f"Activo a operar [{ASSET}]: ").strip()
         if typed:
             ASSET = typed
     elif args.asset:
-        ASSET = args.asset.strip().upper()
+        ASSET = args.asset.strip()
+    api = connect()
     log(f"Activo seleccionado: {ASSET}")
 
-    api = connect()
+    if args.find:
+        from iqoptionapi import constants
+        found = sorted(k for k in constants.ACTIVES if args.find.lower() in k.lower())
+        print("Coincidencias:", ", ".join(found) if found else "ninguna")
+        sys.exit(0)
 
     if ACCOUNT_TYPE == "REAL":
         print("\n⚠️  ESTÁS A PUNTO DE OPERAR CON DINERO REAL ⚠️")
